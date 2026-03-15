@@ -1,21 +1,16 @@
 import amqp from "amqplib";
 import { getInput, printServerHelp } from "../internal/gamelogic/gamelogic.js";
-import type { PlayingState } from "../internal/gamelogic/gamestate.js";
 import { publishJSON } from "../internal/pubsub/publishjson.js";
 import { ExchangePerilDirect, PauseKey } from "../internal/routing/routing.js";
 
 async function main() {
   const rabbitConnString = "amqp://guest:guest@localhost:5672/";
   const conn = await amqp.connect(rabbitConnString);
-  const ch = await conn.createConfirmChannel();
   console.log("Peril game server connected to RabbitMQ!");
-
-  printServerHelp();
 
   ["SIGINT", "SIGTERM"].forEach((signal) =>
     process.on(signal, async () => {
       try {
-        await ch.close();
         await conn.close();
         console.log("RabbitMQ connection closed.");
       } catch (err) {
@@ -26,41 +21,40 @@ async function main() {
     }),
   );
 
-  // Interactive loop for server commands
+  const publishCh = await conn.createConfirmChannel();
+
+  printServerHelp();
+
   while (true) {
     const words = await getInput();
-    if (words.length === 0) {
-      continue;
-    }
+    if (words.length === 0) continue;
 
     const command = words[0];
-
     if (command === "pause") {
-      console.log("Sending pause message...");
-      const pausedState: PlayingState = { isPaused: true };
-      await publishJSON(ch, ExchangePerilDirect, PauseKey, pausedState);
+      console.log("Publishing paused game state");
+      try {
+        await publishJSON(publishCh, ExchangePerilDirect, PauseKey, {
+          isPaused: true,
+        });
+      } catch (err) {
+        console.error("Error publishing pause message:", err);
+      }
     } else if (command === "resume") {
-      console.log("Sending resume message...");
-      const resumedState: PlayingState = { isPaused: false };
-      await publishJSON(ch, ExchangePerilDirect, PauseKey, resumedState);
+      console.log("Publishing resumed game state");
+      try {
+        await publishJSON(publishCh, ExchangePerilDirect, PauseKey, {
+          isPaused: false,
+        });
+      } catch (err) {
+        console.error("Error publishing resume message:", err);
+      }
     } else if (command === "quit") {
-      console.log("Exiting server...");
-      break;
-    } else if (command === "help") {
-      printServerHelp();
+      console.log("Goodbye!");
+      process.exit(0);
     } else {
-      console.log(`Unknown command: ${command}`);
+      console.log("Unknown command");
     }
   }
-
-  try {
-    await ch.close();
-    await conn.close();
-    console.log("RabbitMQ connection closed.");
-  } catch (err) {
-    console.error("Error closing RabbitMQ connection:", err);
-  }
-  process.exit(0);
 }
 
 main().catch((err) => {
